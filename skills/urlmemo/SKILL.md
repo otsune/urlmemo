@@ -104,4 +104,5 @@ python3 ${HERMES_SKILL_DIR}/scripts/search_wiki.py "<キーワード>" ["<キー
 ## 冪等性
 
 同一 URL は `saved-urls.txt` と既存 `raw/articles/*.md` の `source_url` で重複判定し、スキップする。
+URL が異なっていても本文 `sha256` が既存記事と一致する場合は重複本文としてスキップする。
 途中失敗しても再実行で続きから取り込める。

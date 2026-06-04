@@ -21,11 +21,8 @@ URL を含まない問い合わせ（「前に保存した○○の記事どれ�
 
 import os
 import re
-import sys
 import json
 import argparse
-import urllib.parse
-from datetime import datetime
 
 WIKI_PATH = os.environ.get("WIKI_PATH", os.path.expanduser("~/wiki"))
 RAW_ARTICLES_DIR = os.path.join(WIKI_PATH, "raw", "articles")
@@ -33,6 +30,16 @@ INGEST_LOG = os.path.join(WIKI_PATH, "raw", "ingest_log.jsonl")
 
 UNTRUSTED_BEGIN = "--- BEGIN UNTRUSTED EXTERNAL CONTENT ---"
 UNTRUSTED_END = "--- END UNTRUSTED EXTERNAL CONTENT ---"
+
+
+def parse_frontmatter_value(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value[1:-1]
+    return value
 
 
 def parse_article(path):
@@ -51,7 +58,7 @@ def parse_article(path):
             for key in ("source_url", "ingested", "title"):
                 m = re.search(rf"^{key}:\s*(.+)$", front, re.MULTILINE)
                 if m:
-                    meta[key] = m.group(1).strip()
+                    meta[key] = parse_frontmatter_value(m.group(1))
     # UNTRUSTED マーカー内を本文とみなす（あれば）
     if UNTRUSTED_BEGIN in body and UNTRUSTED_END in body:
         body = body.split(UNTRUSTED_BEGIN, 1)[1].split(UNTRUSTED_END, 1)[0]

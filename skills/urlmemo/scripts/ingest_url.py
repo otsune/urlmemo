@@ -20,8 +20,8 @@ import json
 import hashlib
 import argparse
 import urllib.parse
+import html
 from datetime import datetime, timezone
-from pathlib import Path
 
 # normalize_encoding をスクリプト同階層からインポート
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -74,17 +74,46 @@ def filter_url(url):
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return "scheme not http/https"
-    if parsed.netloc in PLACEHOLDER_DOMAINS:
+    hostname = (parsed.hostname or "").lower()
+    if hostname in PLACEHOLDER_DOMAINS:
         return "placeholder domain"
     if len(url) > 500:
         return "url too long"
     return None
 
 
-def load_existing_source_urls():
-    existing = set()
+def extract_urls(values):
+    urls = []
+    seen = set()
+    for value in values:
+        for match in re.findall(r"https?://[^\s<>\]\[\"')]+", value):
+            url = match.rstrip(".,;:!?")
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
+
+
+def parse_frontmatter_value(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value[1:-1]
+    return value
+
+
+def frontmatter_value(value):
+    return json.dumps(str(value).replace("\n", " ").strip(), ensure_ascii=False)
+
+
+def load_existing_article_metadata():
+    """既存 raw 記事から source_url と sha256 を読む。"""
+    urls = set()
+    hashes = set()
     if not os.path.exists(RAW_ARTICLES_DIR):
-        return existing
+        return urls, hashes
     for fname in os.listdir(RAW_ARTICLES_DIR):
         if not fname.endswith(".md"):
             continue
@@ -94,27 +123,33 @@ def load_existing_source_urls():
             if content.startswith("---"):
                 parts = content.split("---", 2)
                 if len(parts) >= 3:
-                    m = re.search(r"source_url:\s*(.+)", parts[1])
-                    if m:
-                        existing.add(m.group(1).strip())
+                    for key, target in (("source_url", urls), ("sha256", hashes)):
+                        m = re.search(rf"^{key}:\s*(.+)$", parts[1], re.MULTILINE)
+                        if m:
+                            target.add(parse_frontmatter_value(m.group(1)))
         except OSError:
             continue
-    return existing
+    return urls, hashes
+
+
+def load_existing_source_urls():
+    urls, _ = load_existing_article_metadata()
+    return urls
 
 
 def extract_title_from_content(content, url):
     m = re.search(r"<title[^>]*>(.*?)</title>", content, re.IGNORECASE | re.DOTALL)
     if m:
-        t = re.sub(r"\s+", " ", m.group(1)).strip()
+        t = html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1)))).strip()
         if t and len(t) < 200:
             return t
     m = re.search(r'<meta\s+property=["\']og:title["\']\s+content=["\'](.*?)["\']',
                   content, re.IGNORECASE)
     if m and m.group(1).strip():
-        return m.group(1).strip()
+        return html.unescape(m.group(1).strip())
     m = re.search(r"<h1[^>]*>(.*?)</h1>", content, re.IGNORECASE | re.DOTALL)
     if m:
-        t = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        t = html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
         if t and len(t) < 150:
             return t
     parsed = urllib.parse.urlparse(url)
@@ -132,6 +167,7 @@ def update_index():
         f"> Last updated: {datetime.now().strftime('%Y-%m-%d')}", "",
     ]
     sections = {
+        "Raw Articles": RAW_ARTICLES_DIR,
         "Entities": os.path.join(WIKI_PATH, "entities"),
         "Concepts": os.path.join(WIKI_PATH, "concepts"),
         "Comparisons": os.path.join(WIKI_PATH, "comparisons"),
@@ -205,12 +241,12 @@ def build_article(url, body_utf8, title, charset):
     sha256 = compute_sha256(body_utf8)
     frontmatter = (
         "---\n"
-        f"source_url: {url}\n"
+        f"source_url: {frontmatter_value(url)}\n"
         f"ingested: {date_str}\n"
         f"fetched_at: {fetched_at}\n"
-        f"content_charset: {charset}\n"
+        f"content_charset: {frontmatter_value(charset)}\n"
         f"sha256: {sha256}\n"
-        f"title: {title}\n"
+        f"title: {frontmatter_value(title)}\n"
         "---\n\n"
         f"# {title}\n\n"
         f"{UNTRUSTED_BEGIN}\n"
@@ -244,7 +280,7 @@ def write_ingest_log(record):
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def process_one(url, dry_run, saved_urls, existing_raw):
+def process_one(url, dry_run, saved_urls, existing_raw, existing_hashes):
     err = filter_url(url)
     if err:
         log(f"SKIP ({err}): {url}")
@@ -252,7 +288,7 @@ def process_one(url, dry_run, saved_urls, existing_raw):
 
     if not dry_run and (url in saved_urls or url in existing_raw):
         log(f"SKIP (already imported): {url}")
-        return {"status": "skipped"}
+        return {"status": "skipped", "reason": "already imported"}
 
     raw, declared, ferr = fetch_raw(url)
     if ferr == "__fallback__":
@@ -269,8 +305,13 @@ def process_one(url, dry_run, saved_urls, existing_raw):
         return {"status": "error", "error": ferr}
 
     body_utf8, charset = to_utf8(raw, declared)
-    title = extract_title_from_content(body_utf8, url)
+    sha256 = compute_sha256(body_utf8)
     fetched_date = datetime.now().strftime("%Y-%m-%d")
+    if not dry_run and sha256 in existing_hashes:
+        log(f"SKIP (duplicate content sha256={sha256[:12]}): {url}")
+        return {"status": "skipped", "reason": "duplicate content", "sha256": sha256,
+                "charset": charset, "fetched_date": fetched_date}
+    title = extract_title_from_content(body_utf8, url)
 
     if dry_run:
         log(f"DRY-RUN ok: {url} | charset={charset} | title={title!r} | {len(body_utf8)} chars")
@@ -290,17 +331,22 @@ def main():
                     help="保存せず取得・正規化のみ確認")
     args = ap.parse_args()
 
-    log(f"=== ingest start (dry_run={args.dry_run}) urls={len(args.urls)} ===")
+    urls = extract_urls(args.urls)
+    if not urls:
+        print("ERROR: http/https URL が見つかりません")
+        return 2
+
+    log(f"=== ingest start (dry_run={args.dry_run}) urls={len(urls)} ===")
 
     saved_urls = set()
     if os.path.exists(SAVED_URLS_FILE):
         with open(SAVED_URLS_FILE, "r", encoding="utf-8") as f:
             saved_urls = {l.strip() for l in f if l.strip()}
-    existing_raw = load_existing_source_urls()
+    existing_raw, existing_hashes = load_existing_article_metadata()
 
     imported, errors = [], []
-    for url in args.urls:
-        res = process_one(url, args.dry_run, saved_urls, existing_raw)
+    for url in urls:
+        res = process_one(url, args.dry_run, saved_urls, existing_raw, existing_hashes)
         # URL と取得年月日を必ずログに残す
         record = {
             "url": url,
@@ -317,6 +363,9 @@ def main():
 
         if res["status"] == "ok":
             imported.append((url, res["file"]))
+            saved_urls.add(url)
+            existing_raw.add(url)
+            existing_hashes.add(res["sha256"])
         elif res["status"] == "error":
             errors.append(url)
 

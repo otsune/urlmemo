@@ -38,10 +38,13 @@ urlmemo/
 
 ```bash
 # 取得・正規化のみ（保存しない）
-WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/ingest_url.py --dry-run "https://example.org/"
+WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/ingest_url.py --dry-run "https://www.gnu.org/licenses/gpl-3.0.html"
 
 # LLM-Wiki に取り込む
-WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/ingest_url.py "https://example.org/article"
+WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/ingest_url.py "https://www.gnu.org/licenses/gpl-3.0.html"
+
+# 自由文を渡しても http/https URL だけを抽出して取り込む
+WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/ingest_url.py "この URL 入れて https://www.gnu.org/licenses/gpl-3.0.html"
 
 # 過去に蓄積したものを検索（URL 無しの問い合わせに対応）
 WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/search_wiki.py gpl license
@@ -50,6 +53,15 @@ WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/search_wiki.py --url --json gith
 
 `WIKI_PATH` 未指定時は `~/wiki`。`hermes_tools.web_extract` が利用できる環境
 （Hermes Agent 同梱）で動作する。未導入環境では `--dry-run` 時のみ標準ライブラリで取得を試みる。
+
+同一 URL は `saved-urls.txt` と既存記事 frontmatter の `source_url` で、同一本文は
+frontmatter の `sha256` で重複排除する。
+
+## テスト
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## Hermes へのインストール
 
