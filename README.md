@@ -23,8 +23,15 @@ urlmemo/
         │   ├── ingest_url.py          # 取得 → UTF-8 → LLM-Wiki 保存 → ログ
         │   └── normalize_encoding.py  # UTF-8 正規化ユーティリティ
         └── references/
-            └── injection-hardening.md # インジェクション対策方針
+            ├── injection-hardening.md # インジェクション対策方針
+            └── activation.md          # url_memo モードの発火設定
 ```
+
+## 自動発火（url_memo モード）
+
+`url_memo` プロファイル、または Discord `url_memo` チャンネルでは、**URL だけ**の
+メッセージも取り込み依頼として自動発火する。設定方法は
+[`skills/urlmemo/references/activation.md`](skills/urlmemo/references/activation.md) を参照。
 
 ## 使い方（手動）
 
