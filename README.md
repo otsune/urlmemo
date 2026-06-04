@@ -21,7 +21,8 @@ urlmemo/
         ├── SKILL.md
         ├── scripts/
         │   ├── ingest_url.py          # 取得 → UTF-8 → LLM-Wiki 保存 → ログ
-        │   └── normalize_encoding.py  # UTF-8 正規化ユーティリティ
+        │   ├── normalize_encoding.py  # UTF-8 正規化ユーティリティ
+        │   └── search_wiki.py         # 蓄積記事の横断検索（問い合わせ対応）
         └── references/
             ├── injection-hardening.md # インジェクション対策方針
             └── activation.md          # url_memo モードの発火設定
@@ -41,6 +42,10 @@ WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/ingest_url.py --dry-run "https:/
 
 # LLM-Wiki に取り込む
 WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/ingest_url.py "https://example.org/article"
+
+# 過去に蓄積したものを検索（URL 無しの問い合わせに対応）
+WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/search_wiki.py gpl license
+WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/search_wiki.py --url --json github
 ```
 
 `WIKI_PATH` 未指定時は `~/wiki`。`hermes_tools.web_extract` が利用できる環境
