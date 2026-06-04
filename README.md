@@ -61,6 +61,10 @@ WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/search_wiki.py --url --json gith
 # X/Twitter は Firecrawl 非対応のため syndication API で取得（無認証・自動判定）
 python3 skills/urlmemo/scripts/fetch_x.py https://x.com/jack/status/20
 WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/save_article.py --url "https://x.com/jack/status/20"
+
+# X Article（長文記事）は xurl 認証済みなら save_article が全文を自動取得（## Raw に全文）
+python3 skills/urlmemo/scripts/fetch_x.py --probe   "https://x.com/USER/status/<id>"  # 記事判定
+python3 skills/urlmemo/scripts/fetch_x.py --article "https://x.com/USER/status/<id>"  # 全文（要 xurl 認証/クレジット）
 ```
 
 X/Twitter の取り込み仕様・制約は [`skills/urlmemo/references/x-twitter.md`](skills/urlmemo/references/x-twitter.md) を参照。

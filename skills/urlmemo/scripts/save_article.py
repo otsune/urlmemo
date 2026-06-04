@@ -322,9 +322,13 @@ def main():
 
     body_utf8, charset = to_utf8(raw, charset)
 
-    # X Article: ツイート本体はリンク+プレビューのみ。エージェントが browser ツールで
-    # レンダリングした記事全文を --article-body-file で受け取り、
+    # X Article: ツイート本体はリンク+プレビューのみ。全文は別経路で取得し
     # Summary=ツイート/プレビュー、Raw=記事全文 として保存する。
+    #   優先1) --article-body-file（エージェントが browser ツールでレンダリングした全文）
+    #   優先2) xurl(公式API) の tweet.fields=article（要認証・要クレジット）を自動取得
+    # ツイートが Article かは syndication 由来本文の "## X Article" マーカーで無料判定し、
+    # Article のときだけ xurl を呼ぶ（通常ツイートでクレジットを消費しない）。
+    x_title = None
     if fetch_x.is_x_url(url) and args.article_body_file and os.path.exists(args.article_body_file):
         with open(args.article_body_file, "rb") as f:
             article_body, _ = to_utf8(f.read())
@@ -332,6 +336,16 @@ def main():
             summary_text = body_utf8          # ツイート本体/プレビュー/メタ → Summary
             body_utf8 = article_body          # browser レンダリング全文 → Raw
             charset = "utf-8(x-article+browser)"
+    elif fetch_x.is_x_url(url) and "## X Article" in body_utf8 and fetch_x.xurl_authed():
+        art_md, art_title, aerr = fetch_x.fetch_article_via_xurl(url)
+        if art_md:
+            summary_text = body_utf8          # ツイート/プレビュー → Summary
+            body_utf8 = art_md                # xurl 由来の記事全文 → Raw
+            charset = "utf-8(x-article+xurl)"
+            x_title = art_title or None
+            log(f"X Article 全文を xurl で取得 ({len(art_md)} 文字)")
+        else:
+            log(f"X Article 全文取得不可 (xurl: {aerr}) → プレビューのみ保存")
 
     sha256 = compute_sha256(body_utf8)
     if sha256 in existing_hashes:
@@ -341,7 +355,8 @@ def main():
         return 0
 
     if fetch_x.is_x_url(url):
-        title = fetch_x.title_for(body_utf8, url)
+        # 記事は article.title を優先。無ければツイート(=summary_text)/本文からタイトル生成
+        title = x_title or fetch_x.title_for(summary_text or body_utf8, url)
     else:
         title = extract_title_from_content(body_utf8, url)
     fname, sha256, ds, fetched_at = save_article(url, body_utf8, title, charset, summary_text)

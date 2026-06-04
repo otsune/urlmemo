@@ -39,19 +39,43 @@ python3 scripts/fetch_x.py https://x.com/jack/status/20 --json   # 生 JSON
 ## X Article（長文記事）
 
 ツイートが X Article の場合、syndication は `article`（タイトル・プレビュー・cover・rest_id）
-までしか返さず **全文は含まない**。全文取得はブラウザレンダリング経由:
+までしか返さず **全文は含まない**。`render_markdown` は article 検出時に `## X Article`
+（タイトル＋プレビュー＋記事URL）を出力する。
 
-1. `fetch_x.py --probe <url>` が `{"is_article": true, "article_url": "..."}` を返す。
-2. エージェントがネイティブ **browser ツール**（url_memo は browser-use クラウド＝ローカル
-   サンドボックス非依存）で `article_url` を開き、本文を一時ファイルに抽出。
-3. `save_article.py --url <url> --article-body-file <tmp>` で
-   **Summary=ツイート/プレビュー、Raw=レンダリング全文** として保存。
+### 全文取得（主経路: xurl 公式 API・自動）
 
-`render_markdown` は article 検出時に `## X Article`（タイトル＋プレビュー＋記事URL＋
-「全文は syndication では取得不可」の注記）を出力する。
+`save_article.py` が、本文に `## X Article` があり **xurl が認証済み**のとき自動で:
 
-> 注: この Claude Code セッションのローカル Chromium はサンドボックス制約で起動不可。
-> ブラウザ取得は **Hermes ランタイム（url_memo の browser ツール）** で実行する。
+```
+xurl "/2/tweets/<id>?tweet.fields=article&expansions=author_id"
+  → data.article.plain_text（記事全文）＋ entities.code（コードブロック）＋ title
+```
+
+を取得し（`fetch_x.fetch_article_via_xurl` / `render_article_markdown`）、
+`## Summary`＝ツイート/プレビュー、`## Raw`＝記事全文 として保存する。
+
+- **通常ツイートでは xurl を呼ばない**（`## X Article` マーカーが無いため）。`xurl read` は
+  API クレジットを消費するので、Article のときだけ使う。
+- xurl 認証は `social-media/xurl` skill（OAuth2、ヘッドレスは下記）。tweet read には
+  **有料ティア＋クレジット**が必要（無料枠は `CreditsDepleted`）。
+- 単体確認: `fetch_x.py --probe <url>`（判定）/ `fetch_x.py --article <url>`（全文）。
+
+### フォールバック（xurl 未認証 / クレジット切れ）
+
+全文が取れないときは preview のみ保存。全文が要るならネイティブ **browser ツール**
+（url_memo は browser-use クラウド＝ローカルサンドボックス非依存）で `article_url` を開き、
+本文を一時ファイルへ → `save_article.py --url <url> --article-body-file <tmp>`。
+
+### ヘッドレス Ubuntu での xurl OAuth2（要点）
+
+- redirect は `http://localhost:8080/callback`。xurl はそのポートでコールバックを待つので、
+  **8080 を他サービス（caddy 等）と衝突させない**。
+- xurl はブラウザ自動起動を試み、ヘッドレスでは URL を表示しないことがある。手元PCから
+  `ssh -L 8080:localhost:8080` でトンネルし、表示された認可 URL を手元ブラウザで開く。
+  URL が出ない場合は `xdg-open` を「URL を `/dev/tty` とファイルに書くスタブ」に差し替えて取得。
+- **`--app <name>` を必ず指定**し、`xurl auth default <app> <user>` で
+  client_id 付き app に user トークンを紐付ける（`default` app は client 無しで refresh 不可）。
+- `~/.xurl` は秘匿情報。**LLM は読まない**。確認は `xurl auth status` のみ。
 
 ## 失敗時
 

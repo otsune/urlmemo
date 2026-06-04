@@ -26,7 +26,9 @@ import ssl
 import sys
 import json
 import math
+import shutil
 import argparse
+import subprocess
 import urllib.parse
 import urllib.request
 
@@ -211,6 +213,73 @@ def article_info(tweet: dict) -> dict:
     return {"is_article": False}
 
 
+def xurl_authed() -> bool:
+    """xurl が認証済み（oauth2/oauth1/bearer のいずれかが設定済み）か。秘匿情報は読まない。"""
+    if not shutil.which("xurl"):
+        return False
+    try:
+        out = subprocess.run(["xurl", "auth", "status"],
+                             capture_output=True, text=True, timeout=15)
+    except Exception:  # noqa: BLE001
+        return False
+    txt = (out.stdout or "") + (out.stderr or "")
+    for m in re.finditer(r"(?:oauth2|oauth1|bearer):\s*(.+)", txt):
+        val = m.group(1).strip()
+        if val and val not in ("(none)", "–", "-"):
+            return True
+    return False
+
+
+def render_article_markdown(art: dict) -> str:
+    """X Article（xurl `tweet.fields=article`）の本文を Markdown 化。"""
+    text = art.get("plain_text", "") or ""
+    ent = art.get("entities", {}) or {}
+    for u in ent.get("urls", []) or []:
+        exp = u.get("expanded_url") or u.get("unwound_url")
+        if u.get("url") and exp:
+            text = text.replace(u["url"], exp)
+    parts = [text.strip()]
+    codes = ent.get("code", []) or []
+    if codes:
+        parts.append("## Code blocks")
+        for c in codes:
+            content = c.get("content") or f"```\n{c.get('code', '')}\n```"
+            parts.append(content)
+    return "\n\n".join(p for p in parts if p).strip() + "\n"
+
+
+def fetch_article_via_xurl(url: str, timeout: int = 30):
+    """X Article の全文を公式 API（xurl）で取得。(markdown|None, title|None, error|None)。
+
+    要認証・要 API クレジット。通常ツイートではなく Article のときだけ呼ぶこと
+    （クレジット節約のため）。
+    """
+    tid = extract_tweet_id(url)
+    if not tid:
+        return None, None, "could not extract tweet id"
+    if not shutil.which("xurl"):
+        return None, None, "xurl not installed"
+    path = (f"/2/tweets/{tid}?tweet.fields=article,created_at,text,entities"
+            "&expansions=author_id")
+    try:
+        proc = subprocess.run(["xurl", path], capture_output=True, text=True, timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        return None, None, f"xurl failed: {type(e).__name__}: {e}"
+    if not (proc.stdout or "").strip():
+        return None, None, f"xurl error: {(proc.stderr or '').strip()[:200]}"
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None, None, "xurl returned non-JSON"
+    if isinstance(data, dict) and str(data.get("type", "")).endswith("credits"):
+        return None, None, "X API credits depleted"
+    d = (data or {}).get("data") or {}
+    art = d.get("article") or {}
+    if not art.get("plain_text"):
+        return None, None, "no article plain_text in API response"
+    return render_article_markdown(art), art.get("title", ""), None
+
+
 def probe(url: str, lang: str = "ja") -> dict:
     """X URL を判定し、X Article なら記事 URL を返す（ブラウザ取得の要否判定用）。
 
@@ -260,11 +329,21 @@ def main():
     ap.add_argument("--json", action="store_true", help="生 JSON を出力")
     ap.add_argument("--probe", action="store_true",
                     help="X 判定・記事URL の有無のみ JSON で出力（ブラウザ取得の要否判定）")
+    ap.add_argument("--article", action="store_true",
+                    help="X Article の全文を xurl(公式API) で取得（要認証・要クレジット）")
     ap.add_argument("--lang", default="ja")
     args = ap.parse_args()
 
     if args.probe:
         print(json.dumps(probe(args.target, lang=args.lang), ensure_ascii=False))
+        return 0
+
+    if args.article:
+        md, title, err = fetch_article_via_xurl(args.target)
+        if err:
+            print(f"ERROR: {err}", file=sys.stderr)
+            return 1
+        print(f"# {title}\n\n{md}" if title else md)
         return 0
 
     tid = extract_tweet_id(args.target)

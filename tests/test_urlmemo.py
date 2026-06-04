@@ -265,6 +265,20 @@ class FetchXTest(unittest.TestCase):
         self.assertTrue(info["is_article"])
         self.assertEqual(info["article_url"], "https://x.com/i/article/777")
 
+    def test_render_article_markdown_xurl(self):
+        art = {
+            "title": "T", "plain_text": "para one see https://t.co/z end",
+            "entities": {
+                "urls": [{"url": "https://t.co/z", "expanded_url": "https://example.com/deep"}],
+                "code": [{"language": "sh", "content": "```sh\nls -la\n```", "code": "ls -la"}],
+            },
+        }
+        md = self.fetch_x.render_article_markdown(art)
+        self.assertIn("para one see https://example.com/deep end", md)  # 本文＋t.co展開
+        self.assertNotIn("https://t.co/z", md)
+        self.assertIn("## Code blocks", md)
+        self.assertIn("ls -la", md)
+
 
 class SaveArticleXTest(unittest.TestCase):
     """X Article のブラウザ全文取得（--article-body-file）の保存テスト。"""
@@ -308,6 +322,35 @@ class SaveArticleXTest(unittest.TestCase):
         self.assertIn("preview-needle", article)            # ツイート/プレビュー → Summary
         self.assertIn("## Raw", article)
         self.assertIn("FULL ARTICLE BODY needle", article)   # 全文 → Raw
+
+    def test_x_article_autofetches_full_text_via_xurl(self):
+        fx = self.save_article.fetch_x
+        orig_authed, orig_fetch = fx.xurl_authed, fx.fetch_article_via_xurl
+        self.addCleanup(lambda: setattr(fx, "xurl_authed", orig_authed))
+        self.addCleanup(lambda: setattr(fx, "fetch_article_via_xurl", orig_fetch))
+        # syndication 由来本文（プレビュー＋ ## X Article マーカー）を返す
+        self.save_article.fetch_raw = lambda u: (
+            "**@ibu** ・ d\n\nhttp://x.com/i/article/777\n\n## X Article\n**T**\n\nprev-needle\n",
+            "utf-8(x)", None,
+        )
+        fx.xurl_authed = lambda: True
+        fx.fetch_article_via_xurl = lambda u: ("FULL-ARTICLE-needle body", "ARTICLE TITLE", None)
+
+        old = sys.argv[:]
+        try:
+            sys.argv = ["save_article.py", "--url", "https://x.com/ibu/status/2062101068842975409"]
+            rc = self.save_article.main()
+        finally:
+            sys.argv = old
+
+        self.assertEqual(rc, 0)
+        article = list((self.wiki / "raw" / "articles").glob("*.md"))[0].read_text(encoding="utf-8")
+        self.assertIn('title: "ARTICLE TITLE"', article)            # 記事タイトル採用
+        self.assertIn("## Summary", article)
+        self.assertIn("prev-needle", article)                       # プレビュー → Summary
+        self.assertIn("## Raw", article)
+        self.assertIn("FULL-ARTICLE-needle body", article)          # xurl 全文 → Raw
+        self.assertIn("x-article+xurl", article)
 
 
 if __name__ == "__main__":
