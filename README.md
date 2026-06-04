@@ -24,10 +24,12 @@ urlmemo/
         ├── scripts/
         │   ├── save_article.py        # 要約 + raw 取得 → UTF-8 → LLM-Wiki 保存 → ログ
         │   ├── ingest_url.py          # dry-run/手動検証用の旧取り込み経路
+        │   ├── fetch_x.py             # X/Twitter 投稿を syndication API で取得（無認証）
         │   ├── normalize_encoding.py  # UTF-8 正規化ユーティリティ
         │   └── search_wiki.py         # 蓄積記事の横断検索（問い合わせ対応）
         └── references/
             ├── injection-hardening.md # インジェクション対策方針
+            ├── x-twitter.md           # X/Twitter 取り込みの方式・制約
             └── activation.md          # url_memo モードの発火設定
 ```
 
@@ -55,7 +57,13 @@ WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/ingest_url.py "この URL 入れ
 # 過去に蓄積したものを検索（URL 無しの問い合わせに対応）
 WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/search_wiki.py gpl license
 WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/search_wiki.py --url --json github
+
+# X/Twitter は Firecrawl 非対応のため syndication API で取得（無認証・自動判定）
+python3 skills/urlmemo/scripts/fetch_x.py https://x.com/jack/status/20
+WIKI_PATH=~/wiki python3 skills/urlmemo/scripts/save_article.py --url "https://x.com/jack/status/20"
 ```
+
+X/Twitter の取り込み仕様・制約は [`skills/urlmemo/references/x-twitter.md`](skills/urlmemo/references/x-twitter.md) を参照。
 
 `WIKI_PATH` 未指定時は `~/wiki`。本番取り込みは Hermes Agent 0.12.0 以降の venv で
 `from tools.web_tools import web_extract_tool` が成功する環境を前提にする。

@@ -16,3 +16,4 @@ venv/
 # Test artifacts
 /tmp-wiki/
 *.log
+skills/urlmemo/scripts/__pycache__/

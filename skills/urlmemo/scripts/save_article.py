@@ -13,9 +13,10 @@ import hashlib
 import argparse
 from datetime import datetime, timezone
 
-# 同階層の normalizer を import
+# 同階層の normalizer / X 取得モジュールを import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from normalize_encoding import to_utf8
+import fetch_x
 
 WIKI_PATH = os.environ.get("WIKI_PATH", os.path.expanduser("~/wiki"))
 RAW_ARTICLES_DIR = os.path.join(WIKI_PATH, "raw", "articles")
@@ -163,7 +164,13 @@ async def fetch_raw_async(url: str):
 
 
 def fetch_raw(url: str):
-    """web_extract_tool で raw を取得し、(text, charset, error) を返す。"""
+    """raw を取得し、(text, charset, error) を返す。
+
+    X/Twitter は Firecrawl 非対応(504)のため web_extract を使わず、
+    無認証の syndication API（fetch_x）で本文を取得する。
+    """
+    if fetch_x.is_x_url(url):
+        return fetch_x.fetch_x_markdown(url)
     return asyncio.run(fetch_raw_async(url))
 
 
@@ -287,6 +294,8 @@ def main():
     ap = argparse.ArgumentParser(description="Save raw article with optional summary")
     ap.add_argument("--url", required=True, help="source URL")
     ap.add_argument("--summary-file", required=False, help="agent-generated summary text file path")
+    ap.add_argument("--article-body-file", required=False,
+                    help="X Article 等で、エージェントが browser ツールでレンダリングした本文ファイル")
     args = ap.parse_args()
 
     url = args.url
@@ -312,6 +321,18 @@ def main():
         return 1
 
     body_utf8, charset = to_utf8(raw, charset)
+
+    # X Article: ツイート本体はリンク+プレビューのみ。エージェントが browser ツールで
+    # レンダリングした記事全文を --article-body-file で受け取り、
+    # Summary=ツイート/プレビュー、Raw=記事全文 として保存する。
+    if fetch_x.is_x_url(url) and args.article_body_file and os.path.exists(args.article_body_file):
+        with open(args.article_body_file, "rb") as f:
+            article_body, _ = to_utf8(f.read())
+        if article_body.strip():
+            summary_text = body_utf8          # ツイート本体/プレビュー/メタ → Summary
+            body_utf8 = article_body          # browser レンダリング全文 → Raw
+            charset = "utf-8(x-article+browser)"
+
     sha256 = compute_sha256(body_utf8)
     if sha256 in existing_hashes:
         log(f"SKIP (duplicate content sha256={sha256[:12]}): {url}")
@@ -319,7 +340,10 @@ def main():
         print(json.dumps({"status": "skipped", "reason": "duplicate content", "sha256": sha256, "fetched_date": datetime.now().strftime("%Y-%m-%d")}, ensure_ascii=False))
         return 0
 
-    title = extract_title_from_content(body_utf8, url)
+    if fetch_x.is_x_url(url):
+        title = fetch_x.title_for(body_utf8, url)
+    else:
+        title = extract_title_from_content(body_utf8, url)
     fname, sha256, ds, fetched_at = save_article(url, body_utf8, title, charset, summary_text)
     log(f"Saved: {fname} (charset={charset})")
     record = {

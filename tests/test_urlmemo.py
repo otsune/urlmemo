@@ -198,5 +198,117 @@ class UrlmemoTest(unittest.TestCase):
         self.assertEqual(len(raw_results), 1)
 
 
+class FetchXTest(unittest.TestCase):
+    """X/Twitter 取得（fetch_x）のネットワーク非依存テスト。"""
+
+    def setUp(self):
+        self.fetch_x = load_module("fetch_x")
+
+    def test_is_x_url_and_id_extraction(self):
+        fx = self.fetch_x
+        self.assertTrue(fx.is_x_url("https://x.com/jack/status/20"))
+        self.assertTrue(fx.is_x_url("https://twitter.com/i/web/status/12345"))
+        self.assertTrue(fx.is_x_url("https://mobile.twitter.com/a/status/9"))
+        self.assertFalse(fx.is_x_url("https://example.com/x/status/1"))
+        self.assertEqual(fx.extract_tweet_id("https://x.com/jack/status/20"), "20")
+        self.assertEqual(fx.extract_tweet_id("https://twitter.com/i/web/status/12345"), "12345")
+        self.assertEqual(fx.extract_tweet_id("1779999999999999999"), "1779999999999999999")
+        self.assertIsNone(fx.extract_tweet_id("https://x.com/jack"))
+
+    def test_render_markdown_from_payload(self):
+        tweet = {
+            "__typename": "Tweet",
+            "text": "hello https://t.co/abc world",
+            "created_at": "2026-01-02T03:04:05.000Z",
+            "user": {"name": "Jane", "screen_name": "jane"},
+            "entities": {"urls": [{"url": "https://t.co/abc", "expanded_url": "https://example.com/full"}]},
+            "mediaDetails": [{"type": "photo", "media_url_https": "https://pbs.twimg.com/x.jpg"}],
+            "quoted_tweet": {"text": "quoted body", "user": {"screen_name": "bob"}},
+        }
+        md = self.fetch_x.render_markdown(tweet)
+        self.assertIn("**@jane** (Jane) ・ 2026-01-02T03:04:05.000Z", md)
+        self.assertIn("https://example.com/full", md)          # t.co 展開
+        self.assertNotIn("https://t.co/abc", md)
+        self.assertIn("https://pbs.twimg.com/x.jpg", md)       # メディア
+        self.assertIn("> 引用 @bob: quoted body", md)           # 引用
+
+    def test_render_markdown_uses_note_tweet_full_text(self):
+        tweet = {
+            "__typename": "Tweet",
+            "text": "truncated…",
+            "user": {"name": "Long", "screen_name": "long"},
+            "note_tweet": {"note_tweet_results": {"result": {"text": "the full long body"}}},
+        }
+        md = self.fetch_x.render_markdown(tweet)
+        self.assertIn("the full long body", md)
+        self.assertNotIn("truncated…", md)
+
+    def test_title_for(self):
+        md = "**@jack** (jack) ・ 2006-03-21T20:50:14.000Z\n\njust setting up my twttr\n"
+        self.assertEqual(
+            self.fetch_x.title_for(md, "https://x.com/jack/status/20"),
+            "@jack: just setting up my twttr",
+        )
+
+    def test_article_render_and_info(self):
+        tweet = {
+            "__typename": "Tweet", "text": "https://t.co/x",
+            "user": {"name": "Y", "screen_name": "ibu"},
+            "entities": {"urls": [{"url": "https://t.co/x", "expanded_url": "http://x.com/i/article/777"}]},
+            "article": {"rest_id": "777", "title": "GREAT TITLE", "preview_text": "preview here"},
+        }
+        md = self.fetch_x.render_markdown(tweet)
+        self.assertIn("## X Article", md)
+        self.assertIn("GREAT TITLE", md)
+        self.assertIn("preview here", md)
+        info = self.fetch_x.article_info(tweet)
+        self.assertTrue(info["is_article"])
+        self.assertEqual(info["article_url"], "https://x.com/i/article/777")
+
+
+class SaveArticleXTest(unittest.TestCase):
+    """X Article のブラウザ全文取得（--article-body-file）の保存テスト。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.wiki = self.base / "wiki"
+        self.home = self.base / "home"
+        self.home.mkdir()
+        self.save_article = load_module("save_article")
+        self.save_article.WIKI_PATH = str(self.wiki)
+        self.save_article.RAW_ARTICLES_DIR = str(self.wiki / "raw" / "articles")
+        self.save_article.INDEX_PATH = str(self.wiki / "index.md")
+        self.save_article.LOG_PATH = str(self.wiki / "log.md")
+        self.save_article.INGEST_LOG = str(self.wiki / "raw" / "ingest_log.jsonl")
+        self.save_article.SAVED_URLS_FILE = str(self.home / "saved-urls.txt")
+        # X 判定を強制し、ツイート md（プレビュー）を返すようにする。
+        # fetch_x は共有モジュールなので tearDown で必ず復元する（テスト汚染防止）。
+        self._orig_is_x = self.save_article.fetch_x.is_x_url
+        self.save_article.fetch_x.is_x_url = lambda u: True
+        self.save_article.fetch_raw = lambda u: ("**@ibu** ・ d\n\npreview-needle\n", "utf-8(x)", None)
+
+    def tearDown(self):
+        self.save_article.fetch_x.is_x_url = self._orig_is_x
+        self.tmp.cleanup()
+
+    def test_article_body_goes_to_raw_preview_to_summary(self):
+        body_file = self.base / "article.txt"
+        body_file.write_text("FULL ARTICLE BODY needle", encoding="utf-8")
+        old = sys.argv[:]
+        try:
+            sys.argv = ["save_article.py", "--url", "https://x.com/ibu/status/2062101068842975409",
+                        "--article-body-file", str(body_file)]
+            rc = self.save_article.main()
+        finally:
+            sys.argv = old
+        self.assertEqual(rc, 0)
+        article = list((self.wiki / "raw" / "articles").glob("*.md"))[0].read_text(encoding="utf-8")
+        self.assertIn("## Summary", article)
+        self.assertIn("preview-needle", article)            # ツイート/プレビュー → Summary
+        self.assertIn("## Raw", article)
+        self.assertIn("FULL ARTICLE BODY needle", article)   # 全文 → Raw
+
+
 if __name__ == "__main__":
     unittest.main()

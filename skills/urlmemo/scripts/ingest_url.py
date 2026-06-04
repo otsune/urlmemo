@@ -23,9 +23,10 @@ import urllib.parse
 import html
 from datetime import datetime, timezone
 
-# normalize_encoding をスクリプト同階層からインポート
+# normalize_encoding / fetch_x をスクリプト同階層からインポート
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from normalize_encoding import to_utf8
+import fetch_x
 
 # 環境設定
 WIKI_PATH = os.environ.get("WIKI_PATH", os.path.expanduser("~/wiki"))
@@ -204,7 +205,9 @@ def append_wiki_log(details):
 # ---- 取得・正規化・保存（新規） ----
 
 def fetch_raw(url):
-    """urllib の簡易取得で raw を返す。"""
+    """raw を返す。X/Twitter は syndication API、それ以外は urllib の簡易取得。"""
+    if fetch_x.is_x_url(url):
+        return fetch_x.fetch_x_markdown(url)
     try:
         from urllib.request import Request, urlopen
         req = Request(url, headers={"User-Agent": "urlmemo/0.1 (Hermes skill)"})
@@ -294,7 +297,10 @@ def process_one(url, dry_run, saved_urls, existing_raw, existing_hashes):
         log(f"SKIP (duplicate content sha256={sha256[:12]}): {url}")
         return {"status": "skipped", "reason": "duplicate content", "sha256": sha256,
                 "charset": charset, "fetched_date": fetched_date}
-    title = extract_title_from_content(body_utf8, url)
+    if fetch_x.is_x_url(url):
+        title = fetch_x.title_for(body_utf8, url)
+    else:
+        title = extract_title_from_content(body_utf8, url)
 
     if dry_run:
         log(f"DRY-RUN ok: {url} | charset={charset} | title={title!r} | {len(body_utf8)} chars")
