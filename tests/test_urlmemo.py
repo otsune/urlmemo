@@ -27,6 +27,7 @@ class UrlmemoTest(unittest.TestCase):
         self.home.mkdir()
 
         self.ingest = load_module("ingest_url")
+        self.save_article = load_module("save_article")
         self.search_wiki = load_module("search_wiki")
 
         self.ingest.WIKI_PATH = str(self.wiki)
@@ -36,6 +37,13 @@ class UrlmemoTest(unittest.TestCase):
         self.ingest.INGEST_LOG = str(self.wiki / "raw" / "ingest_log.jsonl")
         self.ingest.SAVED_URLS_FILE = str(self.home / "saved-urls.txt")
         self.ingest.IMPORT_LOG = str(self.home / ".hermes" / "url_import_log.txt")
+
+        self.save_article.WIKI_PATH = str(self.wiki)
+        self.save_article.RAW_ARTICLES_DIR = str(self.wiki / "raw" / "articles")
+        self.save_article.INDEX_PATH = str(self.wiki / "index.md")
+        self.save_article.LOG_PATH = str(self.wiki / "log.md")
+        self.save_article.INGEST_LOG = str(self.wiki / "raw" / "ingest_log.jsonl")
+        self.save_article.SAVED_URLS_FILE = str(self.home / "saved-urls.txt")
 
         self.search_wiki.WIKI_PATH = str(self.wiki)
         self.search_wiki.RAW_ARTICLES_DIR = str(self.wiki / "raw" / "articles")
@@ -48,6 +56,14 @@ class UrlmemoTest(unittest.TestCase):
         try:
             sys.argv = ["ingest_url.py"] + args
             return self.ingest.main()
+        finally:
+            sys.argv = old_argv
+
+    def run_save_article(self, args):
+        old_argv = sys.argv[:]
+        try:
+            sys.argv = ["save_article.py"] + args
+            return self.save_article.main()
         finally:
             sys.argv = old_argv
 
@@ -98,6 +114,88 @@ class UrlmemoTest(unittest.TestCase):
 
         self.assertEqual(text, "日本語\n")
         self.assertEqual(charset, "cp932")
+
+    def test_save_article_stores_summary_and_raw_sections(self):
+        summary = self.base / "summary.txt"
+        summary.write_text("要約本文\r\nsummary needle", encoding="utf-8")
+        raw = "# Raw Title\n\nraw needle body"
+        self.save_article.fetch_raw = lambda url: (raw, None, None)
+
+        rc = self.run_save_article([
+            "--url", "https://example.net/raw",
+            "--summary-file", str(summary),
+        ])
+
+        self.assertEqual(rc, 0)
+        articles = list((self.wiki / "raw" / "articles").glob("*.md"))
+        self.assertEqual(len(articles), 1)
+        content = articles[0].read_text(encoding="utf-8")
+        self.assertIn("## Summary", content)
+        self.assertIn("## Raw", content)
+        self.assertIn("要約本文\nsummary needle", content)
+        self.assertIn("raw needle body", content)
+        self.assertEqual(content.count(self.save_article.UNTRUSTED_BEGIN), 2)
+        log_lines = (self.wiki / "raw" / "ingest_log.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"status": "ok"', log_lines)
+        self.assertIn('"url": "https://example.net/raw"', log_lines)
+
+    def test_save_article_is_idempotent_by_url_and_sha(self):
+        summary = self.base / "summary.txt"
+        summary.write_text("summary", encoding="utf-8")
+        body = "# Same\n\nsame body"
+        self.save_article.fetch_raw = lambda url: (body, None, None)
+
+        self.assertEqual(self.run_save_article([
+            "--url", "https://example.net/one",
+            "--summary-file", str(summary),
+        ]), 0)
+        self.assertEqual(self.run_save_article([
+            "--url", "https://example.net/one",
+            "--summary-file", str(summary),
+        ]), 0)
+        self.assertEqual(self.run_save_article([
+            "--url", "https://example.net/two",
+            "--summary-file", str(summary),
+        ]), 0)
+
+        articles = list((self.wiki / "raw" / "articles").glob("*.md"))
+        self.assertEqual(len(articles), 1)
+        log_lines = (self.wiki / "raw" / "ingest_log.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"reason": "duplicate content"', log_lines)
+
+    def test_search_reads_summary_and_raw_blocks(self):
+        article_dir = self.wiki / "raw" / "articles"
+        article_dir.mkdir(parents=True)
+        article = article_dir / "2026-06-05-two-blocks.md"
+        article.write_text(
+            "\n".join([
+                "---",
+                'source_url: "https://example.net/two-blocks"',
+                "ingested: 2026-06-05",
+                'title: "Two Blocks"',
+                "---",
+                "",
+                "# Two Blocks",
+                "",
+                "## Summary",
+                self.save_article.UNTRUSTED_BEGIN,
+                "summary-only-needle",
+                self.save_article.UNTRUSTED_END,
+                "",
+                "## Raw",
+                self.save_article.UNTRUSTED_BEGIN,
+                "raw-only-needle",
+                self.save_article.UNTRUSTED_END,
+                "",
+            ]),
+            encoding="utf-8",
+        )
+
+        summary_results = self.search_wiki.search(["summary-only-needle"])
+        raw_results = self.search_wiki.search(["raw-only-needle"])
+
+        self.assertEqual(len(summary_results), 1)
+        self.assertEqual(len(raw_results), 1)
 
 
 if __name__ == "__main__":

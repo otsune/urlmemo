@@ -5,8 +5,8 @@ urlmemo — ユーザーが投稿した URL を取得し UTF-8 に統一して L
 使い方:
     python3 ingest_url.py [--dry-run] <URL> [<URL> ...]
 
-- 取得は hermes_tools.web_extract を使う（Hermes Agent 同梱）。
-  利用不可かつ --dry-run のときのみ urllib による簡易取得にフォールバック。
+- 手動検証用の旧経路。実運用の要約 + raw 保存は save_article.py を使う。
+- 取得は urllib による簡易取得。保存せず取得・正規化だけ確認するには --dry-run を使う。
 - 取得本文は UTF-8 に正規化し、UNTRUSTED マーカーで囲んで保存する（インジェクション対策）。
 - URL と取得年月日を ingest_log.jsonl に記録する。
 
@@ -41,7 +41,6 @@ PLACEHOLDER_DOMAINS = {
     "localhost", "127.0.0.1", "0.0.0.0",
 }
 
-# インジェクション対策: 本文を信頼できないデータとして明示的に囲む
 UNTRUSTED_BEGIN = "--- BEGIN UNTRUSTED EXTERNAL CONTENT ---"
 UNTRUSTED_END = "--- END UNTRUSTED EXTERNAL CONTENT ---"
 
@@ -152,6 +151,11 @@ def extract_title_from_content(content, url):
         t = html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).strip()
         if t and len(t) < 150:
             return t
+    m = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
+    if m:
+        t = m.group(1).strip()
+        if t and len(t) < 150:
+            return t
     parsed = urllib.parse.urlparse(url)
     seg = parsed.path.rstrip("/").split("/")[-1]
     if seg:
@@ -200,39 +204,27 @@ def append_wiki_log(details):
 # ---- 取得・正規化・保存（新規） ----
 
 def fetch_raw(url):
-    """(raw_bytes_or_str, declared_charset, error) を返す。"""
+    """urllib の簡易取得で raw を返す。"""
     try:
-        sys.path.insert(0, os.path.expanduser("~/.hermes"))
-        from hermes_tools import web_extract  # type: ignore
-
-        result = web_extract(urls=[url])
-        if result and "results" in result and result["results"]:
-            item = result["results"][0]
-            if item.get("error"):
-                return None, None, item["error"]
-            return item.get("content", ""), None, None
-        return None, None, "web_extract returned no content"
-    except ImportError:
-        return None, None, "__fallback__"
-    except Exception as e:
-        return None, None, str(e)[:200]
-
-
-def fetch_raw_fallback(url):
-    """web_extract が無い環境（主に --dry-run 検証用）の簡易取得。"""
-    import urllib.request
-
-    req = urllib.request.Request(url, headers={"User-Agent": "urlmemo/0.1"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read()
+        from urllib.request import Request, urlopen
+        req = Request(url, headers={"User-Agent": "urlmemo/0.1 (Hermes skill)"})
+        with urlopen(req, timeout=30) as resp:
+            raw = resp.read()
         ctype = resp.headers.get("Content-Type", "")
-        m = re.search(r"charset=([\w-]+)", ctype, re.IGNORECASE)
-        declared = m.group(1) if m else None
-    if declared is None and isinstance(raw, (bytes, bytearray)):
-        m = re.search(rb'charset=["\']?([\w-]+)', raw[:2048], re.IGNORECASE)
+        charset = None
+        m = re.search(r"charset=([\w-]+)", ctype or "", re.IGNORECASE)
         if m:
-            declared = m.group(1).decode("ascii", "ignore")
-    return raw, declared
+            charset = m.group(1)
+        else:
+            m = re.search(rb"charset=[\"']?([\w-]+)", raw[:2048], re.IGNORECASE)
+            if m:
+                charset = m.group(1).decode("ascii", "ignore")
+        # bytes を str 化して後続 to_utf8 に渡す
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode(charset or "utf-8", "replace")
+        return raw, charset, None
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {e}"
 
 
 def build_article(url, body_utf8, title, charset):
@@ -291,15 +283,6 @@ def process_one(url, dry_run, saved_urls, existing_raw, existing_hashes):
         return {"status": "skipped", "reason": "already imported"}
 
     raw, declared, ferr = fetch_raw(url)
-    if ferr == "__fallback__":
-        if not dry_run:
-            log(f"ERROR: hermes_tools.web_extract 利用不可（実取り込みには必須）: {url}")
-            return {"status": "error", "error": "web_extract unavailable"}
-        try:
-            raw, declared = fetch_raw_fallback(url)
-            ferr = None
-        except Exception as e:
-            ferr = str(e)[:200]
     if ferr:
         log(f"ERROR fetching {url}: {ferr}")
         return {"status": "error", "error": ferr}

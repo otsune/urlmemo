@@ -60,9 +60,16 @@ def parse_article(path):
                 m = re.search(rf"^{key}:\s*(.+)$", front, re.MULTILINE)
                 if m:
                     meta[key] = parse_frontmatter_value(m.group(1))
-    # UNTRUSTED マーカー内を本文とみなす（あれば）
+    # UNTRUSTED マーカー内を本文とみなす（あれば）。
+    # Summary / Raw のように複数ブロックがある場合は全て検索対象にする。
     if UNTRUSTED_BEGIN in body and UNTRUSTED_END in body:
-        body = body.split(UNTRUSTED_BEGIN, 1)[1].split(UNTRUSTED_END, 1)[0]
+        blocks = re.findall(
+            re.escape(UNTRUSTED_BEGIN) + r"\n?(.*?)\n?" + re.escape(UNTRUSTED_END),
+            body,
+            flags=re.DOTALL,
+        )
+        if blocks:
+            body = "\n\n".join(blocks)
     if not meta["title"]:
         m = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
         meta["title"] = m.group(1).strip() if m else os.path.basename(path)[:-3]
