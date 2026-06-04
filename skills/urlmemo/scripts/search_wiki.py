@@ -21,6 +21,7 @@ URL を含まない問い合わせ（「前に保存した○○の記事どれ�
 
 import os
 import re
+import sys
 import json
 import argparse
 
